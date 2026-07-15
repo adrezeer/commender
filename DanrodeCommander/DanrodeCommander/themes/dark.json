@@ -1,0 +1,8 @@
+{
+  "name": "dark",
+  "background": "#101114",
+  "glass": "rgba(255, 255, 255, 0.10)",
+  "border": "rgba(255, 255, 255, 0.18)",
+  "accent": "#4DA3FF",
+  "text": "#FFFFFF"
+}

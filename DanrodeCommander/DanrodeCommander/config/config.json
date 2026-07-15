@@ -1,0 +1,8 @@
+{
+  "safe_mode": true,
+  "theme": "dark",
+  "history_enabled": true,
+  "history_max": 200,
+  "history_path": "D:\\adhm\\code\\commender\\DanrodeCommander\\DanrodeCommander\\history\\history.log",
+  "dpa_key": "DanrodeDefaultKey2024"
+}

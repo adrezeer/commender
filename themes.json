@@ -1,0 +1,14 @@
+{
+  "classic": {
+    "separator": "CYAN",
+    "prompt_path": "GREEN",
+    "prompt_label": "CYAN",
+    "prompt_bracket": "YELLOW"
+  },
+  "sunset": {
+    "separator": "MAGENTA",
+    "prompt_path": "YELLOW",
+    "prompt_label": "RED",
+    "prompt_bracket": "WHITE"
+  }
+}

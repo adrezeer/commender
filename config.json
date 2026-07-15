@@ -1,0 +1,7 @@
+{
+  "safe_mode": true,
+  "theme": "sunset",
+  "history_enabled": true,
+  "history_max": 200,
+  "history_path": "D:\\adhm\\code\\commender\\history.log"
+}

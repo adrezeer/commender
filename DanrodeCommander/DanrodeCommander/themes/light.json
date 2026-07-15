@@ -1,0 +1,9 @@
+{
+  "name": "light",
+  "background": "#F4F5F7",
+  "glass": "rgba(0, 0, 0, 0.06)",
+  "border": "rgba(0, 0, 0, 0.12)",
+  "accent": "#0A84FF",
+  "text": "#101114",
+  "_note": "Reserved for a future release. Danrode Commander 0.1.0 uses dark mode only."
+}

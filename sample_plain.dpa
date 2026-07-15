@@ -1,0 +1,15 @@
+;; DANRODE PYTHON ARCHIVE
+;; TYPE: PLAIN
+;; VERSION: 1.0
+;; FILE: sample_plain.dpa
+;; DESC: Simple hello world script
+;; ════════════════════════════════════════════
+
+print("Hello from Danrode Python Archive!")
+name = input("Enter your name: ")
+print(f"Welcome, {name}!")
+
+for i in range(1, 6):
+    print(f"  Step {i} complete")
+
+print("Script finished.")

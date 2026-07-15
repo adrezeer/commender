@@ -1,0 +1,9 @@
+;; DANRODE PYTHON ARCHIVE
+;; TYPE: LOCKED
+;; VERSION: 1.0
+;; FILE: sample_locked.dpa
+;; DESC: Simple hello world script - encrypted
+;; ════════════════════════════════════════════
+--- DANRODE CODE START ---
+CnByaW50KCJIZWxsbyBmcm9tIERhbnJvZGUgUHl0aG9uIEFyY2hpdmUhIikKbmFtZSA9IGlucHV0KCJFbnRlciB5b3VyIG5hbWU6ICIpCnByaW50KGYiV2VsY29tZSwge25hbWV9ISIpCgpmb3IgaSBpbiByYW5nZSgxLCA2KToKICAgIHByaW50KGYiICBTdGVwIHtpfSBjb21wbGV0ZSIpCgpwcmludCgiU2NyaXB0IGZpbmlzaGVkLiIpCg==
+--- DANRODE CODE END ---

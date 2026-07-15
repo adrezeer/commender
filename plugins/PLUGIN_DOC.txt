@@ -1,0 +1,101 @@
+DCMDS Plugin Guide (Quick)
+
+1) Create a new file in this folder
+   Example: my_plugin.py
+
+2) Add a register() function
+   - The system will call register(register_command)
+   - Use register_command("name", handler, "description")
+
+3) Handler signature
+   def handler(args, raw_cmd):
+       # args = list of words after the command
+       # raw_cmd = full command string
+
+Example plugin:
+
+def register(register_command):
+    def hello(args, raw_cmd):
+        name = args[0] if args else "there"
+        print(f"Hello, {name}!")
+
+    register_command("hello", hello, "Say hello")
+
+Notes:
+- Plugin files must end with .py
+- Names starting with "_" are ignored
+- Restart DCMDS after adding a new plugin
+
+More examples:
+
+Example 1: Echo plugin
+
+def register(register_command):
+    def echo(args, raw_cmd):
+        if not args:
+            print("Usage: echo <text>")
+            return
+        print(" ".join(args))
+
+    register_command("echo", echo, "Print text back to you")
+
+Example 2: Simple math (add)
+
+def register(register_command):
+    def add(args, raw_cmd):
+        if len(args) < 2:
+            print("Usage: add <a> <b>")
+            return
+        try:
+            a = float(args[0])
+            b = float(args[1])
+            print(a + b)
+        except ValueError:
+            print("Numbers only")
+
+    register_command("add", add, "Add two numbers")
+
+Example 3: Show time/date
+
+import datetime
+
+def register(register_command):
+    def now(args, raw_cmd):
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    register_command("now", now, "Show current time")
+
+Example 4: File counter in current folder
+
+import os
+
+def register(register_command):
+    def countfiles(args, raw_cmd):
+        path = os.getcwd()
+        files = [f for f in os.listdir(path) if os.path.isfile(f)]
+        print(f"Files in {path}: {len(files)}")
+
+    register_command("countfiles", countfiles, "Count files in current folder")
+
+Example 5: Random choice
+
+import random
+
+def register(register_command):
+    def pick(args, raw_cmd):
+        if not args:
+            print("Usage: pick <item1> <item2> ...")
+            return
+        print(random.choice(args))
+
+    register_command("pick", pick, "Pick a random item")
+
+Example 6: Mini help for plugin
+
+def register(register_command):
+    def plughelp(args, raw_cmd):
+        print("This is a custom help from a plugin.")
+
+    register_command("plughelp", plughelp, "Show plugin help")
+
+and thanks...
