@@ -1,4 +1,8 @@
-/* 1. تصفير المسافات الافتراضية للمتصفح بالكامل */
+/* 1. تصفير المسافات وتفعيل السلسلة في التنقل */
+html {
+    scroll-behavior: smooth; /* الحركة السحرية عشان التنقل يبقى ناعم جداً */
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -6,46 +10,45 @@
 }
 
 body {
-    background-color: #000; /* خلفية سوداء تملأ أي فراغ */
+    background-color: #000; /* خلفية سوداء تليق بالتصميم */
     color: #fff;
-    font-family: sans-serif; /* خط افتراضي نظيف للروابط الشفافة */
-    overflow-x: hidden; /* منع التمرير الأفقي */
+    overflow-x: hidden; /* منع أي تمدد أفقي غريب */
 }
 
 /* Container الأساسي */
 .main-glow-container {
-    width: 100vw; /* عرض الشاشة بالكامل */
-    min-height: 100vh; /* طول الشاشة بالكامل */
+    width: 100vw;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: center;
-    background-color: #000; /* خلفية سوداء */
+    background-color: #000;
 }
 
 /* تنسيق الأقسام الرئيسية */
 .section {
-    position: relative; /* مهم جداً لضبط مكان الـ hotspots الشفافة */
-    width: 100%; /* القسم يأخذ عرض الـ container */
-    max-width: 1920px; /* العرض الأقصى الموصى به للحفاظ على جودة الصور */
-    margin: 0 auto; /* سنترة القسم في المنتصف إذا زاد عرض الشاشة */
+    position: relative; /* مهم جداً عشان الأزرار الشفافة تتثبت في مكانها الصح */
+    width: 100%;
+    max-width: 1920px; /* الحفاظ على جودة الـ UI في الشاشات الكبيرة */
+    margin: 0 auto;
     display: flex;
     justify-content: center;
     align-items: center;
 }
 
-/* تنسيق الصور لتملأ القسم بالكامل */
+/* تنسيق صور الـ UI لتملأ الشاشة */
 .ui-image {
-    width: 100%; /* الصورة تأخذ عرض القسم بالكامل */
-    height: auto; /* الحفاظ على أبعاد الصورة */
-    display: block; /* إلغاء أي مسافات بيضاء أسفل الصورة */
+    width: 100%;
+    height: auto;
+    display: block;
 }
 
-/* المربع الشفاف (الزر الخفي) - Full Screen Pro 😎 */
+/* المربعات الشفافة (الأزرار المخفية) */
 .hotspot {
     position: absolute;
-    background-color: rgba(255, 255, 255, 0); /* شفاف تماماً */
-    cursor: pointer; /* يخلي الماوس يقلب علامة يد */
+    background-color: rgba(255, 255, 255, 0); /* شفافة تماماً */
+    cursor: pointer; /* الماوس يقلب علامة إيد */
     
-    /* يمكنك تفعيل هذا السطر مؤقتاً باللون الأحمر لضبط مكان الـ hotspot */
+    /* جرب تشيل الـ /* والـ */ من السطر اللي تحت ده لو عايز تظهر حدود حمراء تظبط بيها المقاسات بالظبط */
     /* border: 2px solid red; */
 }
