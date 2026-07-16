@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Danrode Command System</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="page-container">
+
+        <!-- 1. قسم الواجهة الرئيسية Main UI -->
+        <section class="ui-section">
+            <img src="mui.png" alt="Main UI" class="ui-image">
+            
+            <!-- زرار Download: بيودي لقسم التحميل تحت -->
+            <a href="#download-section" class="hotspot" style="top: 70%; left: 10%; width: 25%; height: 15%;"></a> 
+            
+            <!-- زرار More: بيودي لقسم الـ Info مش الـ Download -->
+            <a href="#info-section" class="hotspot" style="top: 70%; left: 60%; width: 25%; height: 15%;"></a>
+        </section>
+
+        <!-- 2. قسم المعلومات Info UI -->
+        <section id="info-section" class="ui-section">
+            <img src="iui.png" alt="Info UI" class="ui-image">
+        </section>
+
+        <!-- 3. قسم التحميل Download UI -->
+        <section id="download-section" class="ui-section">
+            <img src="dui.png" alt="Download UI" class="ui-image">
+            
+            <!-- زرار الـ ZIP: بيحمل ملف commender.zip -->
+            <a href="commender.zip" download class="hotspot" style="top: 72%; left: 5%; width: 25%; height: 15%;"></a>
+            
+            <!-- زرار الـ Python: بيحمل ملف 0.0.7.py -->
+            <a href="0.0.7.py" download class="hotspot" style="top: 72%; left: 70%; width: 25%; height: 15%;"></a>
+        </section>
+
+    </div>
+
+</body>
+</html>

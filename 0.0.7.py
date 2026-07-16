@@ -13,6 +13,9 @@ import platform
 import sys
 import psutil  # For detailed system info
 import base64
+import http.server
+import socketserver
+import threading
 
 init(autoreset=True)  # Colors reset automatically
 
@@ -38,6 +41,10 @@ THEMES = {}
 ACTIVE_THEME = {}
 HISTORY = []
 LOADED_PLUGINS = []
+
+# Global web server holder so we can stop it if needed
+http_server_thread = None
+http_server_instance = None
 
 SAFE_COMMANDS = {
     "shutdown",
@@ -99,9 +106,20 @@ BASE_HELP = [
     {"names": ["plugins"], "display": "plugins", "desc": "List loaded plugins", "icon": "🧩"},
     {"names": ["help"], "display": "help [command]", "desc": "Show help or details for a command", "icon": "📚"},
     {"names": ["dpa"], "display": "dpa <file>", "desc": "Run/open a .dpa file (Danrode Python App)", "icon": "🔐"},
-    {"names": ["encrypt"], "display": "encrypt <file.py> [key]", "desc": "Encrypt a .py file into a .dpa (XOR+Base64)", "icon": "🔒"},
-    {"names": ["decrypt"], "display": "decrypt <file.dpa> [key]", "desc": "Decrypt a .dpa file and show original Python source", "icon": "🔓"},
+    {"names": ["encrypt"], "display": "encrypt <file.py> [key]", "desc": "Encrypt a .py file into a legacy .dpa (XOR+Base64 text)", "icon": "🔒"},
+    {"names": ["decrypt"], "display": "decrypt <file.dpa> [key]", "desc": "Decrypt a legacy text .dpa and show original Python source", "icon": "🔓"},
+    {"names": ["pack"], "display": "pack <folder> [out.dpa] [key]", "desc": "Package a folder into an encrypted binary .dpa app (ZIP-based, like APK)", "icon": "📦"},
+    {"names": ["unpack"], "display": "unpack <file.dpa> [dest] [key]", "desc": "Extract a binary .dpa app package without running it", "icon": "📤"},
+    {"names": ["dpainfo"], "display": "dpainfo <file.dpa>", "desc": "Show format/manifest info about any .dpa file", "icon": "🧾"},
+    {"names": ["zip"], "display": "zip <folder> [out.zip]", "desc": "Compress a folder into a .zip archive", "icon": "🗜️"},
+    {"names": ["unzip"], "display": "unzip <file.zip> [dest]", "desc": "Extract a .zip archive", "icon": "📬"},
+    {"names": ["hash"], "display": "hash <file> [md5|sha1|sha256]", "desc": "Compute a file's hash checksum", "icon": "🔢"},
+    {"names": ["ping"], "display": "ping <host>", "desc": "Ping a network host", "icon": "📶"},
+    {"names": ["cmd"], "display": "cmd [command]", "desc": "Run one real Windows CMD command, or enter a live CMD session", "icon": "⬛"},
+    {"names": ["alias"], "display": "alias <name> <cmd> | list | remove <name>", "desc": "Create/manage custom command shortcuts", "icon": "🏷️"},
     {"names": ["apps"], "display": "apps", "desc": "List and launch system/built-in apps", "icon": "📱"},
+    {"names": ["new"], "display": "new", "desc": "Show new commands in this version", "icon": "🆕"},
+    {"names": ["sit"], "display": "sit [option] [value]", "desc": "Configure system settings (logo display, safe mode, history)", "icon": "⚙️"},
 ]
 
 def register_command(name, handler, description=""):
@@ -117,6 +135,7 @@ def _ensure_default_files():
         "history_max": 200,
         "history_path": HISTORY_PATH,
         "dpa_key": "DanrodeDefaultKey2024",
+        "aliases": {},
     }
     default_themes = {
         "classic": {
@@ -168,6 +187,8 @@ def load_config():
     cfg.setdefault("history_max", 200)
     cfg.setdefault("history_path", HISTORY_PATH)
     cfg.setdefault("dpa_key", "DanrodeDefaultKey2024")
+    cfg.setdefault("aliases", {})
+    cfg.setdefault("show_logo", True)
     if not os.path.isabs(cfg["history_path"]):
         cfg["history_path"] = os.path.join(APP_DIR, cfg["history_path"])
     return cfg
@@ -285,6 +306,9 @@ def show_help(topic=None):
 
 def print_logo():
     """Display DCMDS system logo with colors"""
+    if not CONFIG.get("show_logo", True):
+        print(Fore.CYAN + Style.BRIGHT + "\n[DCMDS Terminal: Settings option 'logo' is disabled]\n")
+        return
     logo = f"""
 {Fore.CYAN}{Style.BRIGHT}╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
@@ -302,8 +326,8 @@ def print_logo():
 ║               {Fore.WHITE}{Style.BRIGHT}▄█  █  ▄█  █  ██▄ █ ▀ █{Fore.CYAN}                         ║
 ║                                                               ║
 ║            {Fore.YELLOW}⚡ Advanced Terminal Interface ⚡{Fore.CYAN}                  ║
-║                 {Fore.RED}Alpha {Fore.GREEN}Version 0.0.6{Fore.CYAN}                           ║
-║              {Fore.CYAN}Build: {Fore.YELLOW}  may,  31, 2026{Fore.CYAN}                          ║
+║                 {Fore.RED}Alpha {Fore.GREEN}Version 0.0.7{Fore.CYAN}                           ║
+║              {Fore.CYAN}Build: {Fore.YELLOW}  jul,  15, 2026{Fore.CYAN}                          ║
 ║                 {Fore.YELLOW}[Under Development]{Fore.CYAN}                           ║
 ╚═══════════════════════════════════════════════════════════════╝
 """
@@ -317,6 +341,8 @@ def separator():
 
 def animated_separator():
     """Animated loading separator"""
+    if not CONFIG.get("show_logo", True):
+        return
     chars = ["▰", "▱"]
     for i in range(35):
         print(Fore.MAGENTA + chars[i % 2], end="", flush=True)
@@ -1091,14 +1117,212 @@ def system_cleanup():
 
 
 # ════════════════════════════════════════════════════════════════
+#  NEW DIRECT IMPLEMENTATIONS (CAMERA, CALC, TREE, PYTHON RUNNERS)
+# ════════════════════════════════════════════════════════════════
+
+def handle_camera():
+    """Handle standard camera preview screen"""
+    global camera_active, cap
+    if camera_active:
+        print_error("Camera is already active.")
+        return
+    
+    print_info("Initializing Camera... Press 'q' inside window to close.")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print_error("Error: Could not open video device / camera.")
+        return
+    
+    camera_active = True
+    while camera_active:
+        ret, frame = cap.read()
+        if not ret:
+            print_error("Failed to grab frame.")
+            break
+        cv2.imshow("DCMDS Camera Live Preview", frame)
+        # Check if 'q' is pressed on keyboard to exit window
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+            
+    cap.release()
+    cv2.destroyAllWindows()
+    camera_active = False
+    print_success("Camera preview stopped.")
+
+def handle_camera_take():
+    """Capture instant photo from camera feed"""
+    cap_temp = cv2.VideoCapture(0)
+    if not cap_temp.isOpened():
+        print_error("Could not access camera for photo capture.")
+        return
+    
+    # Let sensor adjust to light
+    time.sleep(0.5)
+    ret, frame = cap_temp.read()
+    if ret:
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"capture_{timestamp}.png"
+        filepath = os.path.join(current_path, filename) if current_path else filename
+        cv2.imwrite(filepath, frame)
+        print_success(f"Photo captured and saved as: {Fore.YELLOW}{filename}")
+    else:
+        print_error("Failed to capture image.")
+    cap_temp.release()
+
+def handle_video_record():
+    """Start video recording loop"""
+    global video_recording, video_writer, cap
+    if video_recording:
+        print_error("Video recording is already running.")
+        return
+    
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print_error("Could not access camera device.")
+        return
+        
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"video_{timestamp}.mp4"
+    filepath = os.path.join(current_path, filename) if current_path else filename
+    
+    # Default parameters
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+    fps = 20.0
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(filepath, fourcc, fps, (frame_width, frame_height))
+    
+    video_recording = True
+    print_success(f"Video Recording Started! Saved to: {filename}")
+    print_info("Type 'endvid' to stop and finalize the video recording.")
+    
+    def record_loop():
+        global video_recording, cap, video_writer
+        while video_recording:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            video_writer.write(frame)
+            cv2.imshow("DCMDS Recording...", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                video_recording = False
+                break
+        
+        if video_writer:
+            video_writer.release()
+        if cap:
+            cap.release()
+        cv2.destroyAllWindows()
+        video_recording = False
+        print_success("Video finalized successfully.")
+
+    # Run loop in background thread to keep console input alive
+    thread = threading.Thread(target=record_loop, daemon=True)
+    thread.start()
+
+def handle_advanced_calculator():
+    """Mathematical solver module"""
+    print(Fore.CYAN + Style.BRIGHT + "\n🧮 ADVANCED CALCULATOR MODE\n")
+    print(Fore.WHITE + "Supports: +, -, *, /, sin, cos, tan, log, log10, sqrt, **")
+    print(Fore.WHITE + "Type 'exit' to close the calculator.\n")
+    separator()
+    while True:
+        expr = input(Fore.YELLOW + "calc> " + Fore.WHITE).strip()
+        if expr.lower() == 'exit':
+            print_info("Calculator closed.")
+            break
+        if not expr:
+            continue
+        try:
+            # Preparing safe math namespace evaluation
+            allowed_names = {
+                'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
+                'log': math.log, 'log10': math.log10, 'sqrt': math.sqrt,
+                'pi': math.pi, 'e': math.e, 'pow': math.pow
+            }
+            result = eval(expr, {"__builtins__": None}, allowed_names)
+            print_success(f"Result: {Fore.YELLOW}{result}")
+        except Exception as e:
+            print_error(f"Calculation Error: {e}")
+
+def handle_tree_view(path, prefix=""):
+    """Recursive directory tree rendering"""
+    try:
+        if not os.path.exists(path):
+            print_error("Path doesn't exist.")
+            return
+        
+        items = sorted(os.listdir(path))
+        for idx, item in enumerate(items):
+            item_path = os.path.join(path, item)
+            is_last = (idx == len(items) - 1)
+            connector = "└── " if is_last else "├── "
+            
+            if os.path.isdir(item_path):
+                print(prefix + connector + Fore.CYAN + f"📁 {item}")
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                handle_tree_view(item_path, new_prefix)
+            else:
+                print(prefix + connector + Fore.YELLOW + f"📄 {item}")
+    except Exception as e:
+        print_error(f"Error building tree: {e}")
+
+def handle_local_web_server(port=8000):
+    """Starts Python-based web server thread on specified path"""
+    global http_server_thread, http_server_instance
+    if not current_path:
+        print_error("No folder selected to serve. Use BC command first.")
+        return
+        
+    if http_server_instance:
+        print_info("Stopping already running server...")
+        http_server_instance.shutdown()
+        
+    os.chdir(current_path)
+    handler = http.server.SimpleHTTPRequestHandler
+    
+    try:
+        http_server_instance = socketserver.TCPServer(("", port), handler)
+        print_success(f"Web Server started successfully at: http://localhost:{port}/")
+        print_info(f"Serving folder: {current_path}")
+        
+        def run_server():
+            http_server_instance.serve_forever()
+            
+        http_server_thread = threading.Thread(target=run_server, daemon=True)
+        http_server_thread.start()
+    except Exception as e:
+        print_error(f"Failed to bind local server on port {port}: {e}")
+
+def handle_python_interactive():
+    """Interactive Python REPL console"""
+    print(Fore.GREEN + Style.BRIGHT + "\n🐍 PYTHON INTERACTIVE REPL (acode)")
+    print(Fore.WHITE + "Write Python code directly below. Type 'exit()' to leave session.\n")
+    separator()
+    import code
+    # Starts standard interactive shell console
+    code.interact(local=locals())
+    print_info("Interactive Mode Closed.")
+
+
+# ════════════════════════════════════════════════════════════════
 #  DPA FILE HANDLER - Danrode Protected Archive
 # ════════════════════════════════════════════════════════════════
 
 # =====================================================================
-# DPA (Danrode Python App) Engine — XOR + Base64 encryption
+# DPA (Danrode Python App) Engine
+#   v1  -> plain text, no encryption (#DPA-PLAIN)
+#   v2  -> legacy single-file text encryption, XOR + Base64 (#DPA-XOR2)
+#   v3  -> NEW: binary ZIP-based encrypted app package (APK-style).
+#          A whole folder (multiple files, assets, a manifest.json with
+#          an entry point) is zipped, then the raw ZIP bytes are
+#          XOR-encrypted and written as pure binary (no Base64/text
+#          wrapping), prefixed with a small binary header.
 # =====================================================================
 DPA_HEADER_PLAIN = "#DPA-PLAIN"
 DPA_HEADER_XOR   = "#DPA-XOR2" # Version 2 supports embedded key hints
+DPA_MAGIC_V3     = b"DPA3BIN\x00"  # Binary ZIP-based app package magic
 DEFAULT_DPA_KEY  = "DanrodeDefaultKey2024"
 
 # Common typo dictionary for smart fix suggestions
@@ -1124,7 +1348,7 @@ def _get_dpa_key(custom=None):
         return DEFAULT_DPA_KEY
 
 def xor_encode(plaintext: str, key: str) -> str:
-    """XOR encrypt then Base64 encode. Returns ASCII string."""
+    """XOR encrypt then Base64 encode. Returns ASCII string. (legacy v2 text engine)"""
     pb = plaintext.encode("utf-8")
     kb = key.encode("utf-8")
     if not kb:
@@ -1133,7 +1357,7 @@ def xor_encode(plaintext: str, key: str) -> str:
     return base64.b64encode(out).decode("ascii")
 
 def xor_decode(ciphertext: str, key: str) -> str:
-    """Base64 decode then XOR decrypt. Returns plaintext string."""
+    """Base64 decode then XOR decrypt. Returns plaintext string. (legacy v2 text engine)"""
     raw = base64.b64decode(ciphertext.encode("ascii"))
     kb = key.encode("utf-8")
     if not kb:
@@ -1141,8 +1365,14 @@ def xor_decode(ciphertext: str, key: str) -> str:
     out = bytes(b ^ kb[i % len(kb)] for i, b in enumerate(raw))
     return out.decode("utf-8")
 
+def _xor_bytes(data: bytes, key: str) -> bytes:
+    kb = key.encode("utf-8") if key else b""
+    if not kb:
+        kb = DEFAULT_DPA_KEY.encode("utf-8")
+    return bytes(b ^ kb[i % len(kb)] for i, b in enumerate(data))
+
 def encrypt_to_dpa(py_path: str, dpa_path: str = None, key: str = None) -> str:
-    """Encrypt a .py file into a .dpa file. Returns the output path."""
+    """(Legacy v2) Encrypt a single .py file into a text .dpa file. Kept for backward compatibility."""
     key = _get_dpa_key(key)
     with open(py_path, "r", encoding="utf-8") as f:
         source = f.read()
@@ -1159,7 +1389,7 @@ def encrypt_to_dpa(py_path: str, dpa_path: str = None, key: str = None) -> str:
     return dpa_path
 
 def decrypt_dpa(dpa_path: str, key: str = None) -> str:
-    """Decrypt a .dpa file and return the original Python source."""
+    """(Legacy v1/v2) Decrypt a text-based .dpa file and return the original Python source."""
     key = _get_dpa_key(key)
     with open(dpa_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -1190,6 +1420,223 @@ def decrypt_dpa(dpa_path: str, key: str = None) -> str:
         return xor_decode(encoded, key)
     # Legacy / no header → assume plain Python
     return content
+
+def pack_to_dpa(folder_path: str, dpa_path: str = None, key: str = None, entry: str = None) -> str:
+    """
+    (NEW v3) Pack a whole folder into a binary, encrypted .dpa app package —
+    similar in spirit to how an APK bundles files inside a signed/zipped
+    container. Steps:
+      1. Zip every file under folder_path (recursively) + write manifest.json.
+      2. XOR-encrypt the raw ZIP bytes.
+      3. Write a small binary header (magic, version, key hint, checksum,
+         payload length) followed by the encrypted bytes to a .dpa file.
+    """
+    import zipfile, io, zlib
+
+    key = _get_dpa_key(key)
+    folder_path = folder_path.rstrip("\\/")
+    if not os.path.isdir(folder_path):
+        raise ValueError("Not a folder")
+
+    if dpa_path is None:
+        dpa_path = folder_path + ".dpa"
+
+    # Auto-detect an entry point if the caller didn't specify one
+    if entry is None:
+        for candidate in ("main.py", "app.py", "__main__.py"):
+            if os.path.exists(os.path.join(folder_path, candidate)):
+                entry = candidate
+                break
+        if entry is None:
+            py_files = sorted(f for f in os.listdir(folder_path) if f.endswith(".py"))
+            entry = py_files[0] if py_files else None
+
+    # Load from info.json or manifest.json if exists in folder
+    manifest_data = None
+    info_path = os.path.join(folder_path, "info.json")
+    manifest_path = os.path.join(folder_path, "manifest.json")
+    if os.path.exists(info_path):
+        try:
+            with open(info_path, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+        except Exception:
+            pass
+    elif os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+        except Exception:
+            pass
+
+    if manifest_data is None:
+        manifest_data = {
+            "name": os.path.basename(folder_path),
+            "entry": entry,
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            "dpa_version": 3,
+        }
+    else:
+        if "name" not in manifest_data:
+            manifest_data["name"] = os.path.basename(folder_path)
+        if "entry" not in manifest_data or not manifest_data["entry"]:
+            manifest_data["entry"] = entry
+        manifest_data["dpa_version"] = 3
+        if "created" not in manifest_data:
+            manifest_data["created"] = datetime.datetime.now().isoformat(timespec="seconds")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Write both info.json and manifest.json for compatibility
+        manifest_str = json.dumps(manifest_data, indent=2)
+        zf.writestr("info.json", manifest_str)
+        zf.writestr("manifest.json", manifest_str)
+        
+        for root, dirs, files in os.walk(folder_path):
+            for f in files:
+                if f in ("info.json", "manifest.json"):
+                    continue
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, folder_path)
+                zf.write(full, rel)
+
+    zip_bytes = buf.getvalue()
+    checksum = zlib.crc32(zip_bytes) & 0xFFFFFFFF
+    encrypted = _xor_bytes(zip_bytes, key)
+    hint = _get_key_hint(key).encode("ascii")
+
+    with open(dpa_path, "wb") as f:
+        f.write(DPA_MAGIC_V3)                     # 8 bytes magic
+        f.write(bytes([3]))                        # 1 byte format version
+        f.write(bytes([len(hint)]))                 # 1 byte key-hint length
+        f.write(hint)                                # key hint bytes
+        f.write(checksum.to_bytes(4, "big"))          # 4 bytes CRC32 of plain zip
+        f.write(len(encrypted).to_bytes(8, "big"))     # 8 bytes payload length
+        f.write(encrypted)                              # encrypted zip payload
+
+    return dpa_path
+
+def _read_dpa_v3(dpa_path: str, key: str = None):
+    """Reads & decrypts a v3 binary .dpa file. Returns (zip_bytes, manifest_dict)."""
+    import zlib
+
+    with open(dpa_path, "rb") as f:
+        data = f.read()
+
+    if not data.startswith(DPA_MAGIC_V3):
+        raise ValueError("Not a v3 binary .dpa app package")
+
+    pos = len(DPA_MAGIC_V3)
+    version = data[pos]; pos += 1
+    hint_len = data[pos]; pos += 1
+    hint = data[pos:pos + hint_len].decode("ascii"); pos += hint_len
+    checksum = int.from_bytes(data[pos:pos + 4], "big"); pos += 4
+    payload_len = int.from_bytes(data[pos:pos + 8], "big"); pos += 8
+    payload = data[pos:pos + payload_len]
+
+    if not key:
+        if hint == _get_key_hint(DEFAULT_DPA_KEY):
+            key = DEFAULT_DPA_KEY
+        elif hint == _get_key_hint(CONFIG.get("dpa_key", "") or ""):
+            key = CONFIG.get("dpa_key")
+        else:
+            key = _get_dpa_key()
+
+    zip_bytes = _xor_bytes(payload, key)
+
+    if (zlib.crc32(zip_bytes) & 0xFFFFFFFF) != checksum:
+        raise ValueError("Checksum mismatch — wrong key or the file is corrupted")
+
+    import zipfile, io
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        manifest = None
+        for candidate in ("info.json", "manifest.json"):
+            try:
+                manifest = json.loads(zf.read(candidate).decode("utf-8"))
+                break
+            except KeyError:
+                continue
+        if manifest is None:
+            manifest = {"name": os.path.basename(dpa_path), "entry": None, "dpa_version": 3}
+
+    return zip_bytes, manifest
+
+def unpack_dpa(dpa_path: str, dest_folder: str = None, key: str = None):
+    """Extract a v3 binary .dpa package to a folder WITHOUT executing it."""
+    import zipfile, io
+
+    zip_bytes, manifest = _read_dpa_v3(dpa_path, key)
+    if not dest_folder:
+        dest_folder = os.path.splitext(dpa_path)[0] + "_extracted"
+    os.makedirs(dest_folder, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        zf.extractall(dest_folder)
+    return dest_folder, manifest
+
+def run_dpa_v3(dpa_path: str, key: str = None):
+    """Decrypt, extract to a temp dir and execute the entry point of a v3 app package."""
+    import zipfile, io, tempfile, shutil as _shutil
+
+    zip_bytes, manifest = _read_dpa_v3(dpa_path, key)
+    entry = manifest.get("entry")
+
+    print(Fore.GREEN + f"✓ App:      {Fore.YELLOW}{manifest.get('name', '?')}")
+    print(Fore.GREEN + f"✓ Entry:    {Fore.YELLOW}{entry or '(none found)'}")
+    print(Fore.GREEN + f"✓ Packed:   {Fore.YELLOW}{manifest.get('created', '?')}")
+    separator()
+
+    if not entry:
+        print_error("No entry point defined in manifest.json/info.json — cannot run. Use 'unpack' to inspect files instead.")
+        return
+
+    tmp_dir = tempfile.mkdtemp(prefix="dpa_run_")
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            zf.extractall(tmp_dir)
+
+        entry_path = os.path.join(tmp_dir, entry)
+        if not os.path.exists(entry_path):
+            print_error(f"Entry file missing inside package: {entry}")
+            return
+
+        with open(entry_path, "r", encoding="utf-8") as f:
+            source = f.read()
+
+        print(Fore.CYAN + "▶ Executing...\n")
+        separator()
+
+        ns = {"__name__": "__main__", "__file__": entry_path}
+        
+        # Save old working directory and change to temp directory so relative asset references work
+        old_cwd = os.getcwd()
+        os.chdir(tmp_dir)
+        sys.path.insert(0, tmp_dir)
+        try:
+            compiled = compile(source, entry_path, "exec")
+            exec(compiled, ns)
+            separator()
+            print_success("App finished successfully!")
+        except SystemExit:
+            separator()
+            print_info("App called sys.exit().")
+        except SyntaxError as e:
+            separator()
+            print_error(f"SyntaxError: {e.msg} (line {e.lineno})")
+            suggest_fix(source, e)
+        except Exception as e:
+            import traceback as _tb
+            separator()
+            print_error(f"{type(e).__name__}: {e}")
+            tb_lines = _tb.format_exception(type(e), e, e.__traceback__)
+            for tl in tb_lines[-3:]:
+                print(Fore.RED + tl.rstrip())
+            suggest_fix(source, e)
+        finally:
+            # Restore working directory
+            os.chdir(old_cwd)
+            if tmp_dir in sys.path:
+                sys.path.remove(tmp_dir)
+    finally:
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def suggest_fix(source: str, error: Exception):
     """Print a friendly fix hint for common Python errors."""
@@ -1245,7 +1692,29 @@ def suggest_fix(source: str, error: Exception):
     print(Fore.WHITE + "   " + msg)
 
 def run_dpa(filepath: str, key: str = None):
-    """Decrypt (if needed) and execute a .dpa file."""
+    """Decrypt (if needed) and execute a .dpa file. Auto-detects legacy text (v1/v2)
+    vs. the new binary ZIP-based app package (v3) by checking the file's magic bytes."""
+    try:
+        with open(filepath, "rb") as f:
+            head = f.read(len(DPA_MAGIC_V3))
+    except Exception as e:
+        print_error(f"Cannot read file: {e}")
+        return
+
+    # ---- NEW v3: binary ZIP-based encrypted app package ----
+    if head == DPA_MAGIC_V3:
+        print(Fore.CYAN + Style.BRIGHT + "\n🚀 DPA RUNNER (v3 — Binary App Package)\n")
+        separator()
+        try:
+            run_dpa_v3(filepath, key)
+        except Exception as e:
+            separator()
+            print_error(f"Failed to run .dpa app: {e}")
+            print_info("Tip: pass the correct key with 'dpa <file> <key>' if it was packed with a custom key.")
+        separator()
+        return
+
+    # ---- Legacy v1/v2 (single-file, text-based) ----
     print(Fore.CYAN + Style.BRIGHT + "\n🚀 DPA RUNNER\n")
     separator()
     print(Fore.GREEN + f"✓ File:   {Fore.YELLOW}{os.path.basename(filepath)}")
@@ -1273,9 +1742,9 @@ def run_dpa(filepath: str, key: str = None):
     except Exception:
         first = ""
     if first == DPA_HEADER_XOR:
-        print(Fore.CYAN + "🔐 Type:   " + Fore.YELLOW + "Encrypted (XOR+Base64)")
+        print(Fore.CYAN + "🔐 Type:   " + Fore.YELLOW + "Encrypted (Legacy v2, XOR+Base64)")
     elif first == DPA_HEADER_PLAIN:
-        print(Fore.CYAN + "📄 Type:   " + Fore.YELLOW + "Plain Python")
+        print(Fore.CYAN + "📄 Type:   " + Fore.YELLOW + "Plain Python (v1)")
     else:
         print(Fore.CYAN + "📄 Type:   " + Fore.YELLOW + "Legacy (no header)")
     separator()
@@ -1308,10 +1777,53 @@ def run_dpa(filepath: str, key: str = None):
     separator()
 
 def open_dpa_file(filepath):
-    """Entry point for .dpa files. Offers run / view options."""
+    """Entry point for .dpa files. Auto-detects v3 binary app packages vs legacy
+    text-based (v1/v2) scripts and offers the right menu for each."""
     print(Fore.CYAN + Style.BRIGHT + "\n🔐 DPA FILE HANDLER\n")
     separator()
     print(Fore.GREEN + f"✓ File:   {Fore.YELLOW}{os.path.basename(filepath)}")
+
+    try:
+        with open(filepath, "rb") as f:
+            head = f.read(len(DPA_MAGIC_V3))
+    except Exception as e:
+        print_error(f"Cannot read file: {e}")
+        return
+
+    # ---- NEW v3: binary ZIP-based app package ----
+    if head == DPA_MAGIC_V3:
+        print(Fore.CYAN + "📦 Binary DPA App (v3, ZIP + Encrypted)")
+        separator()
+        print(Fore.WHITE + "  1. " + Fore.GREEN  + "Run app")
+        print(Fore.WHITE + "  2. " + Fore.YELLOW + "Extract to folder")
+        print(Fore.WHITE + "  3. " + Fore.MAGENTA + "Show info / manifest")
+        print(Fore.WHITE + "  0. " + Fore.CYAN   + "Cancel")
+        separator()
+        choice = input(Fore.YELLOW + "Choice (0-3): " + Fore.WHITE).strip()
+        if choice == "1":
+            run_dpa(filepath)
+        elif choice == "2":
+            dest = input(Fore.YELLOW + "Extract to folder (blank = auto): " + Fore.WHITE).strip() or None
+            try:
+                dest_folder, manifest = unpack_dpa(filepath, dest)
+                print_success(f"Extracted → {Fore.YELLOW}{dest_folder}")
+            except Exception as e:
+                print_error(f"Extract failed: {e}")
+        elif choice == "3":
+            try:
+                zip_bytes, manifest = _read_dpa_v3(filepath)
+                print(Fore.CYAN + f"\n🧾 MANIFEST: {os.path.basename(filepath)}\n")
+                separator()
+                for k, v in manifest.items():
+                    print(Fore.WHITE + f"  {k:<12} " + Fore.YELLOW + str(v))
+                separator()
+            except Exception as e:
+                print_error(f"Failed to read info: {e}")
+        else:
+            print_info("Cancelled")
+        return
+
+    # ---- Legacy v1/v2 (single-file, text-based) ----
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             first = f.readline().strip()
@@ -1319,7 +1831,7 @@ def open_dpa_file(filepath):
         print_error(f"Cannot read file: {e}")
         return
     is_encrypted = (first == DPA_HEADER_XOR)
-    print(Fore.CYAN + ("🔒 Encrypted DPA" if is_encrypted else "📄 Plain DPA"))
+    print(Fore.CYAN + ("🔒 Encrypted DPA (Legacy v2 text)" if is_encrypted else "📄 Plain DPA (Legacy v1 text)"))
     separator()
     print(Fore.WHITE + "  1. " + Fore.GREEN  + "Run script")
     print(Fore.WHITE + "  2. " + Fore.YELLOW + "View source code")
@@ -1389,8 +1901,17 @@ def main():
         cmd = input(prompt).strip()
         if not cmd:
             continue
-    
+
         append_history(cmd)
+
+        # ---- ALIAS EXPANSION ----
+        _alias_map = CONFIG.get("aliases", {})
+        _first_word = cmd.split()[0].lower() if cmd.split() else ""
+        if _first_word in _alias_map and _first_word != "alias":
+            _rest_parts = cmd.split(maxsplit=1)
+            _rest = _rest_parts[1] if len(_rest_parts) > 1 else ""
+            cmd = (_alias_map[_first_word] + " " + _rest).strip()
+
         separator()
     
         # ---- EXIT ----
@@ -1411,6 +1932,88 @@ def main():
             parts = cmd.split(maxsplit=1)
             topic = parts[1] if len(parts) > 1 else None
             show_help(topic)
+
+        # ---- NEW ----
+        elif cmd.lower() == "new":
+            print(Fore.CYAN + Style.BRIGHT + "\n🆕 NEW COMMANDS IN DCMDS VERSION 0.0.7\n")
+            separator()
+            print(Fore.WHITE + "  ⬛ " + Fore.GREEN + "cmd" + Fore.WHITE + "               — run real Windows CMD commands, or a live CMD session")
+            print(Fore.WHITE + "  📦 " + Fore.GREEN + "pack / unpack" + Fore.WHITE + "     — new binary ZIP-based .dpa app packages (APK-style)")
+            print(Fore.WHITE + "  🧾 " + Fore.GREEN + "dpainfo" + Fore.WHITE + "           — inspect any .dpa file's format/manifest without running it")
+            print(Fore.WHITE + "  🗜️  " + Fore.GREEN + "zip / unzip" + Fore.WHITE + "       — compress/extract folders and archives")
+            print(Fore.WHITE + "  🔢 " + Fore.GREEN + "hash" + Fore.WHITE + "              — md5 / sha1 / sha256 file checksums")
+            print(Fore.WHITE + "  📶 " + Fore.GREEN + "ping" + Fore.WHITE + "              — ping a network host")
+            print(Fore.WHITE + "  🏷️  " + Fore.GREEN + "alias" + Fore.WHITE + "             — create your own custom command shortcuts")
+            print(Fore.WHITE + "  ⚙️  " + Fore.GREEN + "sit" + Fore.WHITE + "               — configure settings (logo display, safe mode, history)")
+            print(Fore.WHITE + "  🆕 " + Fore.GREEN + "new" + Fore.WHITE + "               — show this new commands reference screen")
+            separator()
+
+        # ---- SIT (Settings) ----
+        elif cmd.lower() == "sit" or cmd.lower().startswith("sit "):
+            parts = cmd.split()
+            if len(parts) == 1:
+                # Interactive settings dashboard
+                print(Fore.CYAN + Style.BRIGHT + "\n⚙️  DCMDS SYSTEM SETTINGS (sit)\n")
+                separator()
+                
+                logo_status = "ENABLED" if CONFIG.get("show_logo", True) else "DISABLED"
+                safe_status = "ENABLED" if CONFIG.get("safe_mode", True) else "DISABLED"
+                hist_status = "ENABLED" if CONFIG.get("history_enabled", True) else "DISABLED"
+                
+                print(f"  1. Logo Display:        {Fore.YELLOW}{logo_status}")
+                print(f"  2. Safe Mode:           {Fore.YELLOW}{safe_status}")
+                print(f"  3. History Logging:     {Fore.YELLOW}{hist_status}")
+                print(f"  4. Current Theme:       {Fore.YELLOW}{CONFIG.get('theme', 'classic')}")
+                separator()
+                print(Fore.CYAN + "To change a setting, use: " + Fore.GREEN + "sit <option> <value>")
+                print(Fore.WHITE + "Examples:\n  • " + Fore.GREEN + "sit logo off\n" + Fore.WHITE + "  • " + Fore.GREEN + "sit safe on\n" + Fore.WHITE + "  • " + Fore.GREEN + "sit history off")
+                separator()
+            elif len(parts) >= 3:
+                setting = parts[1].lower()
+                value = parts[2].lower()
+                
+                if setting == "logo":
+                    if value in ["on", "true", "yes"]:
+                        CONFIG["show_logo"] = True
+                        save_config(CONFIG)
+                        print_success("Logo display enabled.")
+                    elif value in ["off", "false", "no"]:
+                        CONFIG["show_logo"] = False
+                        save_config(CONFIG)
+                        print_success("Logo display disabled.")
+                    else:
+                        print_error("Invalid value. Use: on / off")
+                
+                elif setting in ["safe", "safemode"]:
+                    if value in ["on", "true", "yes"]:
+                        CONFIG["safe_mode"] = True
+                        save_config(CONFIG)
+                        print_success("Safe mode enabled.")
+                    elif value in ["off", "false", "no"]:
+                        CONFIG["safe_mode"] = False
+                        save_config(CONFIG)
+                        print_success("Safe mode disabled.")
+                    else:
+                        print_error("Invalid value. Use: on / off")
+                
+                elif setting in ["history", "hist"]:
+                    if value in ["on", "true", "yes"]:
+                        CONFIG["history_enabled"] = True
+                        save_config(CONFIG)
+                        print_success("History logging enabled.")
+                    elif value in ["off", "false", "no"]:
+                        CONFIG["history_enabled"] = False
+                        save_config(CONFIG)
+                        print_success("History logging disabled.")
+                    else:
+                        print_error("Invalid value. Use: on / off")
+                
+                else:
+                    print_error(f"Unknown setting option: '{setting}'")
+                separator()
+            else:
+                print_error("Usage: sit | sit logo <on/off> | sit safe <on/off> | sit history <on/off>")
+                separator()
 
         # ---- HISTORY ----
         elif cmd.lower().startswith("history"):
@@ -1616,10 +2219,19 @@ def main():
             print(Fore.CYAN + Style.BRIGHT + "\n📊 DCMDS VERSION INFORMATION\n")
             separator()
             print(Fore.WHITE + "System Name:     " + Fore.YELLOW + "DCMDS (Danrode CMD System)")
-            print(Fore.WHITE + "Version:         " + Fore.GREEN + "0.0.6")
+            print(Fore.WHITE + "Version:         " + Fore.GREEN + "0.0.7")
             print(Fore.WHITE + "Stage:           " + Fore.RED + "Alpha (Under Development)")
-            print(Fore.WHITE + "Build:           " + Fore.CYAN + "may,  31, 2026")
+            print(Fore.WHITE + "Build:           " + Fore.CYAN + "jul,  15, 2026")
             print(Fore.WHITE + "Creator:         " + Fore.MAGENTA + "Danrode")
+            separator()
+            print(Fore.YELLOW + Style.BRIGHT + "\n🆕 New in v0.0.7:")
+            print(Fore.WHITE + "  ⬛ " + Fore.GREEN + "cmd" + Fore.WHITE + "               — run real Windows CMD commands, or a live CMD session")
+            print(Fore.WHITE + "  📦 " + Fore.GREEN + "pack / unpack" + Fore.WHITE + "     — new binary ZIP-based .dpa app packages (APK-style)")
+            print(Fore.WHITE + "  🧾 " + Fore.GREEN + "dpainfo" + Fore.WHITE + "           — inspect any .dpa file's format/manifest without running it")
+            print(Fore.WHITE + "  🗜️  " + Fore.GREEN + "zip / unzip" + Fore.WHITE + "       — compress/extract folders and archives")
+            print(Fore.WHITE + "  🔢 " + Fore.GREEN + "hash" + Fore.WHITE + "              — md5 / sha1 / sha256 file checksums")
+            print(Fore.WHITE + "  📶 " + Fore.GREEN + "ping" + Fore.WHITE + "              — ping a network host")
+            print(Fore.WHITE + "  🏷️  " + Fore.GREEN + "alias" + Fore.WHITE + "             — create your own custom command shortcuts")
             separator()
             print(Fore.YELLOW + "\n📝 Version Format: Alpha.Beta.Version")
             print(Fore.WHITE + "• " + Fore.RED + "0" + Fore.WHITE + ".x.x = Alpha (Under Development)")
@@ -1627,22 +2239,10 @@ def main():
             print(Fore.WHITE + "• x.x." + Fore.GREEN + "1" + Fore.WHITE + " = Version Number (Official Release)")
     
         # ---- DPA COMMAND (AUTO) ----
-        elif cmd.lower().startswith("dpa "):
-            filepath = cmd[4:].strip()
-            if not os.path.isabs(filepath) and current_path:
-                filepath = os.path.join(current_path, filepath)
-            if os.path.exists(filepath):
-                run_dpa(filepath)
-            else:
-                # Try adding .dpa
-                if not filepath.lower().endswith(".dpa"):
-                    alt = filepath + ".dpa"
-                    if os.path.exists(alt):
-                        run_dpa(alt)
-                        separator()
-                        continue
-                print_error(f"File not found: {filepath}")
-            separator()
+        elif cmd.lower().startswith("dpa ") and False:
+            # NOTE: handled by the explicit "dpa " block further below (kept as
+            # a single source of truth so v3 binary + legacy files both work).
+            pass
     
         # ---- DEBUG ----
         elif cmd.lower() == "debug":
@@ -1651,8 +2251,8 @@ def main():
     
             print(Fore.CYAN + Style.BRIGHT + "📦 DCMDS INFORMATION:")
             print(Fore.WHITE + "  System Name:    " + Fore.YELLOW + "DCMDS (Danrode CMD System)")
-            print(Fore.WHITE + "  Version:        " + Fore.GREEN + "0.0.6 (Alpha)")
-            print(Fore.WHITE + "  Build Date:     " + Fore.CYAN + "may,  31, 2026")
+            print(Fore.WHITE + "  Version:        " + Fore.GREEN + "0.0.7 (Alpha)")
+            print(Fore.WHITE + "  Build Date:     " + Fore.CYAN + "jul,  15, 2026")
             print(Fore.WHITE + "  Current Path:   " + Fore.YELLOW + (current_path if current_path else "None"))
     
             separator()
@@ -1758,8 +2358,8 @@ def main():
                             f.write("DCMDS DEBUG LOG\n")
                             f.write("=" * 50 + "\n\n")
                             f.write(f"Generated: {datetime.datetime.now()}\n\n")
-                            f.write(f"DCMDS Version: 0.0.6 (Alpha)\n")
-                            f.write(f"Build Date: may,  31, 2026\n")
+                            f.write(f"DCMDS Version: 0.0.7 (Alpha)\n")
+                            f.write(f"Build Date: jul,  15, 2026\n")
                             f.write(f"Python Version: {sys.version}\n")
                             f.write(f"OS: {platform.system()} {platform.release()}\n")
                             f.write(f"Processor: {platform.processor()}\n")
@@ -1976,9 +2576,9 @@ def main():
                         full_cmd = f"{user_cmd} {selected_file}"
                         print_info(f"Executing: {Fore.YELLOW}{full_cmd}")
 
-        # ---- DPA (explicit command) ----
+        # ---- DPA (explicit command, handles both v3 binary & legacy) ----
         elif cmd.lower().startswith("dpa "):
-            # dpa <file> [key]  → run encrypted/plain dpa
+            # dpa <file> [key]  → run binary v3 app OR legacy text dpa
             parts = cmd.split(maxsplit=2)
             name = parts[1] if len(parts) > 1 else ""
             key  = parts[2] if len(parts) > 2 else None
@@ -2000,563 +2600,503 @@ def main():
                 else:
                     print_error(f"File not found: {name}")
 
-        # ---- ENCRYPT (.py → .dpa) ----
-        elif cmd.lower().startswith("encrypt "):
-            parts = cmd.split(maxsplit=2)
-            name = parts[1] if len(parts) > 1 else ""
-            key  = parts[2] if len(parts) > 2 else None
-            if not name:
-                print_error("Usage: encrypt <file.py> [key]")
+        # ---- PACK (folder → binary encrypted .dpa v3 app package) ----
+        elif cmd.lower().startswith("pack "):
+            parts = cmd.split(maxsplit=3)
+            if len(parts) < 2:
+                print_error("Usage: pack <folder> [output.dpa] [key]")
             else:
-                src_path = name if os.path.isabs(name) else (
-                    os.path.join(current_path, name) if current_path else name)
-                if not os.path.exists(src_path):
-                    print_error(f"File not found: {name}")
+                folder = parts[1]
+                out = parts[2] if len(parts) > 2 else None
+                key = parts[3] if len(parts) > 3 else None
+                if not os.path.isabs(folder) and current_path:
+                    folder = os.path.join(current_path, folder)
+                if out and not os.path.isabs(out) and current_path:
+                    out = os.path.join(current_path, out)
+                if not os.path.isdir(folder):
+                    print_error(f"Folder not found: {folder}")
                 else:
                     try:
-                        out = encrypt_to_dpa(src_path, None, key)
-                        print_success(f"Encrypted → {Fore.YELLOW}{out}")
+                        result_path = pack_to_dpa(folder, out, key)
+                        print_success(f"Packed → {Fore.YELLOW}{result_path}")
                         used_key = key or CONFIG.get("dpa_key", DEFAULT_DPA_KEY)
                         print_info(f"Key used: {used_key}")
+                        print_info("Tip: use 'dpainfo' or 'unpack' to inspect the package, 'dpa' to run it.")
                     except Exception as e:
-                        print_error(f"Encryption failed: {e}")
+                        print_error(f"Packing failed: {e}")
 
-        # ---- DECRYPT (.dpa → show source) ----
-        elif cmd.lower().startswith("decrypt "):
-            parts = cmd.split(maxsplit=2)
-            name = parts[1] if len(parts) > 1 else ""
-            key  = parts[2] if len(parts) > 2 else None
-            if not name:
-                print_error("Usage: decrypt <file.dpa> [key]")
+        # ---- UNPACK (extract .dpa v3 without running it) ----
+        elif cmd.lower().startswith("unpack "):
+            parts = cmd.split(maxsplit=3)
+            if len(parts) < 2:
+                print_error("Usage: unpack <file.dpa> [dest] [key]")
             else:
-                src_path = name if os.path.isabs(name) else (
-                    os.path.join(current_path, name) if current_path else name)
-                if not os.path.exists(src_path):
+                name = parts[1]
+                dest = parts[2] if len(parts) > 2 else None
+                key = parts[3] if len(parts) > 3 else None
+                path = name if os.path.isabs(name) else (os.path.join(current_path, name) if current_path else name)
+                if dest and not os.path.isabs(dest) and current_path:
+                    dest = os.path.join(current_path, dest)
+                if not os.path.exists(path):
                     print_error(f"File not found: {name}")
                 else:
                     try:
-                        source = decrypt_dpa(src_path, key)
-                        print(Fore.CYAN + f"\n📄 DECRYPTED SOURCE: {os.path.basename(src_path)}\n")
-                        separator()
-                        for i, line in enumerate(source.splitlines(), 1):
-                            print(Fore.WHITE + f"{i:>4}  " + Fore.YELLOW + line)
-                        separator()
-                        print_success("Decryption successful!")
+                        dest_folder, manifest = unpack_dpa(path, dest, key)
+                        print_success(f"Extracted → {Fore.YELLOW}{dest_folder}")
+                        print_info(f"App: {manifest.get('name')}   Entry: {manifest.get('entry')}")
                     except Exception as e:
-                        print_error(f"Decryption failed: {e}")
+                        print_error(f"Unpack failed: {e}")
 
-
-        # ---- OPEN ----
-        elif cmd.lower().startswith("open "):
-            if not current_path:
-                print_error("No path selected")
+        # ---- DPAINFO (inspect any .dpa without running it) ----
+        elif cmd.lower().startswith("dpainfo "):
+            name = cmd[8:].strip()
+            path = name if os.path.isabs(name) else (os.path.join(current_path, name) if current_path else name)
+            if not os.path.exists(path):
+                print_error(f"File not found: {name}")
             else:
-                name = cmd[5:].strip()
-                path = os.path.join(current_path, name)
-                if os.path.exists(path):
-                    ext = os.path.splitext(path)[1].lower()
-                    if ext == ".dpa":
-                        open_dpa_file(path)
+                try:
+                    with open(path, "rb") as f:
+                        head = f.read(len(DPA_MAGIC_V3))
+                    print(Fore.CYAN + Style.BRIGHT + f"\n🧾 DPA INFO: {os.path.basename(path)}\n")
+                    separator()
+                    if head == DPA_MAGIC_V3:
+                        zip_bytes, manifest = _read_dpa_v3(path)
+                        print(Fore.WHITE + "Format:       " + Fore.GREEN + "v3 (Binary ZIP, encrypted)")
+                        print(Fore.WHITE + "App Name:     " + Fore.YELLOW + str(manifest.get("name", "?")))
+                        print(Fore.WHITE + "Entry Point:  " + Fore.YELLOW + str(manifest.get("entry")))
+                        print(Fore.WHITE + "Created:      " + Fore.CYAN + str(manifest.get("created", "?")))
+                        print(Fore.WHITE + "File Size:    " + Fore.MAGENTA + f"{os.path.getsize(path):,} bytes")
+                        import zipfile, io as _io
+                        with zipfile.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+                            names = zf.namelist()
+                        print(Fore.WHITE + f"\nContents ({len(names)} files):")
+                        for n in names[:20]:
+                            print(Fore.YELLOW + f"  - {n}")
+                        if len(names) > 20:
+                            print(Fore.WHITE + f"  ... and {len(names) - 20} more")
                     else:
-                        print_success(f"Opening file: {Fore.YELLOW}{path}")
-                        os.startfile(path)
-                else:
-                    print_error("File not found")
-    
-        # ---- CREATE ----
-        elif cmd.lower().startswith("create "):
-            if not current_path:
-                print_error("No path selected")
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            first = f.readline().strip()
+                        if first.startswith("#DPA-XOR"):
+                            fmt = "v2 (Legacy XOR+Base64 text)"
+                        elif first == DPA_HEADER_PLAIN:
+                            fmt = "v1 (Legacy plain text)"
+                        else:
+                            fmt = "Legacy / Unknown"
+                        print(Fore.WHITE + "Format:       " + Fore.GREEN + fmt)
+                        print(Fore.WHITE + "File Size:    " + Fore.MAGENTA + f"{os.path.getsize(path):,} bytes")
+                    separator()
+                except Exception as e:
+                    print_error(f"Failed to read dpa info: {e}")
+
+        # ---- ZIP (folder → .zip) ----
+        elif cmd.lower().startswith("zip "):
+            parts = cmd[4:].strip().split()
+            if not parts:
+                print_error("Usage: zip <folder> [output.zip]")
             else:
-                name = cmd[7:].strip()
-                path = os.path.join(current_path, name)
-                if not os.path.exists(path):
-                    open(path, "w").close()
-                    print_success(f"File created: {Fore.YELLOW}{path}")
+                folder = parts[0]
+                out = parts[1] if len(parts) > 1 else None
+                if not os.path.isabs(folder) and current_path:
+                    folder = os.path.join(current_path, folder)
+                if not os.path.isdir(folder):
+                    print_error("Folder not found")
                 else:
-                    print_error("File already exists")
-    
-        # ---- DELETE ----
+                    if out is None:
+                        out = folder.rstrip("\\/") + ".zip"
+                    elif not os.path.isabs(out) and current_path:
+                        out = os.path.join(current_path, out)
+                    try:
+                        import zipfile as _zf
+                        with _zf.ZipFile(out, "w", _zf.ZIP_DEFLATED) as z:
+                            for root, dirs, files in os.walk(folder):
+                                for f in files:
+                                    full = os.path.join(root, f)
+                                    rel = os.path.relpath(full, folder)
+                                    z.write(full, rel)
+                        print_success(f"Zipped → {Fore.YELLOW}{out}")
+                    except Exception as e:
+                        print_error(f"Zip failed: {e}")
+
+        # ---- UNZIP (.zip → folder) ----
+        elif cmd.lower().startswith("unzip "):
+            parts = cmd[6:].strip().split()
+            if not parts:
+                print_error("Usage: unzip <file.zip> [dest]")
+            else:
+                src = parts[0]
+                dest = parts[1] if len(parts) > 1 else None
+                if not os.path.isabs(src) and current_path:
+                    src = os.path.join(current_path, src)
+                if not os.path.exists(src):
+                    print_error("Zip file not found")
+                else:
+                    if dest is None:
+                        dest = os.path.splitext(src)[0] + "_extracted"
+                    elif not os.path.isabs(dest) and current_path:
+                        dest = os.path.join(current_path, dest)
+                    try:
+                        import zipfile as _zf
+                        with _zf.ZipFile(src) as z:
+                            z.extractall(dest)
+                        print_success(f"Extracted → {Fore.YELLOW}{dest}")
+                    except Exception as e:
+                        print_error(f"Unzip failed: {e}")
+
+        # ---- HASH ----
+        elif cmd.lower().startswith("hash "):
+            parts = cmd[5:].strip().split()
+            if not parts:
+                print_error("Usage: hash <file> [md5|sha1|sha256]")
+            else:
+                fname = parts[0]
+                algo = parts[1].lower() if len(parts) > 1 else "sha256"
+                path = fname if os.path.isabs(fname) else (os.path.join(current_path, fname) if current_path else fname)
+                if not os.path.exists(path):
+                    print_error("File not found")
+                elif algo not in ("md5", "sha1", "sha256", "sha512"):
+                    print_error("Supported algorithms: md5, sha1, sha256, sha512")
+                else:
+                    try:
+                        import hashlib
+                        h = hashlib.new(algo)
+                        with open(path, "rb") as f:
+                            for chunk in iter(lambda: f.read(8192), b""):
+                                h.update(chunk)
+                        print(Fore.CYAN + f"\n🔢 {algo.upper()} Hash of {os.path.basename(path)}:\n")
+                        separator()
+                        print(Fore.GREEN + h.hexdigest())
+                        separator()
+                    except Exception as e:
+                        print_error(f"Hash failed: {e}")
+
+        # ---- PING ----
+        elif cmd.lower().startswith("ping "):
+            host = cmd[5:].strip()
+            if not host:
+                print_error("Usage: ping <host>")
+            else:
+                print_output(f"Pinging {Fore.YELLOW}{host}{Fore.MAGENTA}...")
+                try:
+                    result = subprocess.run(["ping", "-n", "4", host], capture_output=True, text=True, encoding="cp1256")
+                    print(Fore.WHITE + result.stdout)
+                    if result.stderr:
+                        print(Fore.RED + result.stderr)
+                except Exception as e:
+                    print_error(f"Ping failed: {e}")
+
+        # ---- CMD (real Windows CMD passthrough) ----
+        elif cmd.lower() == "cmd":
+            print(Fore.CYAN + Style.BRIGHT + "\n⬛ WINDOWS CMD SESSION")
+            print(Fore.WHITE + "Type real cmd.exe commands. Type 'exit' to return to DCMDS.\n")
+            separator()
+            while True:
+                cmd_line = input(Fore.WHITE + "CMD> " + Fore.WHITE).strip()
+                if cmd_line.lower() == "exit":
+                    print_info("Returned to DCMDS")
+                    break
+                if not cmd_line:
+                    continue
+                try:
+                    result = subprocess.run(
+                        cmd_line, shell=True, cwd=(current_path or None),
+                        capture_output=True, text=True, encoding="cp1256", errors="replace"
+                    )
+                    if result.stdout:
+                        print(Fore.WHITE + result.stdout)
+                    if result.stderr:
+                        print(Fore.RED + result.stderr)
+                except Exception as e:
+                    print_error(f"Command failed: {e}")
+
+        elif cmd.lower().startswith("cmd "):
+            raw = cmd[4:].strip()
+            if not raw:
+                print_error("Usage: cmd <command>  (or just 'cmd' to enter a live session)")
+            else:
+                try:
+                    result = subprocess.run(
+                        raw, shell=True, cwd=(current_path or None),
+                        capture_output=True, text=True, encoding="cp1256", errors="replace"
+                    )
+                    if result.stdout:
+                        print(Fore.WHITE + result.stdout)
+                    if result.stderr:
+                        print(Fore.RED + result.stderr)
+                    print_success("Command executed")
+                except Exception as e:
+                    print_error(f"Command failed: {e}")
+
+        # ---- ALIAS ----
+        elif cmd.lower() == "alias" or cmd.lower().startswith("alias "):
+            rest = cmd[5:].strip()
+            aliases = CONFIG.get("aliases", {})
+            if not rest or rest.lower() == "list":
+                if not aliases:
+                    print_info("No aliases defined. Usage: alias <name> <command>")
+                else:
+                    print(Fore.CYAN + "\n🏷️  Aliases:\n")
+                    for name, target in aliases.items():
+                        print(Fore.WHITE + f"  {name:<15} → " + Fore.YELLOW + target)
+            elif rest.lower().startswith("remove "):
+                name = rest[7:].strip().lower()
+                if name in aliases:
+                    del aliases[name]
+                    CONFIG["aliases"] = aliases
+                    save_config(CONFIG)
+                    print_success(f"Alias removed: {name}")
+                else:
+                    print_error("Alias not found")
+            else:
+                sub = rest.split(maxsplit=1)
+                if len(sub) < 2:
+                    print_error("Usage: alias <name> <command> | alias list | alias remove <name>")
+                else:
+                    name, target = sub[0].lower(), sub[1]
+                    aliases[name] = target
+                    CONFIG["aliases"] = aliases
+                    save_config(CONFIG)
+                    print_success(f"Alias registered: {name} → {target}")
+
+        # ════════════════════════════════════════════════════════════════
+        #  IMPLEMENTATION OF THE NEW DEMANDED COMMANDS
+        # ════════════════════════════════════════════════════════════════
+        
+        # ---- CAMERA ----
+        elif cmd.lower() == "camera":
+            handle_camera()
+            
+        # ---- TAKE PHOTO ----
+        elif cmd.lower() == "take":
+            handle_camera_take()
+            
+        # ---- START VIDEO RECORDING ----
+        elif cmd.lower() == "vid":
+            handle_video_record()
+            
+        # ---- STOP VIDEO RECORDING ----
+        elif cmd.lower() == "endvid":
+            if video_recording:
+                video_recording = False
+                print_info("Stopping recording process...")
+            else:
+                print_error("No video is currently being recorded.")
+                
+        # ---- ADVANCED CALCULATOR ----
+        elif cmd.lower() == "calc":
+            handle_advanced_calculator()
+            
+        # ---- PYTHON INTERACTIVE (ACODE) ----
+        elif cmd.lower() == "acode":
+            handle_python_interactive()
+            
+        # ---- OPEN FILE IN VS CODE ----
+        elif cmd.lower().startswith("code "):
+            target = cmd[5:].strip()
+            path = target if os.path.isabs(target) else (os.path.join(current_path, target) if current_path else target)
+            if os.path.exists(path):
+                try:
+                    subprocess.Popen(["code", path], shell=True)
+                    print_success(f"Opened {target} in VS Code.")
+                except Exception as e:
+                    print_error(f"Could not open VS Code: {e}. Is it added to system PATH?")
+            else:
+                print_error("File not found.")
+                
+        # ---- DIRECTORY TREE ----
+        elif cmd.lower() == "tree":
+            if current_path:
+                print_info(f"Directory Tree for {current_path}:")
+                handle_tree_view(current_path)
+            else:
+                print_error("No current path. Please choose a drive/path first.")
+                
+        # ---- LOCAL HTTP SERVER ----
+        elif cmd.lower().startswith("server"):
+            parts = cmd.split()
+            port = 8000
+            if len(parts) >= 3 and parts[1].lower() == "port" and parts[2].isdigit():
+                port = int(parts[2])
+            handle_local_web_server(port)
+            
+        # ---- CREATE FILE ----
+        elif cmd.lower().startswith("create "):
+            target = cmd[7:].strip()
+            path = target if os.path.isabs(target) else (os.path.join(current_path, target) if current_path else target)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("")
+                print_success(f"File created successfully: {target}")
+            except Exception as e:
+                print_error(f"Failed to create file: {e}")
+                
+        # ---- DELETE FILE ----
         elif cmd.lower().startswith("delete "):
             if safe_mode_blocked("delete"):
                 print_error("Safe mode is ON. Use 'safe off' to enable this command.")
                 separator()
                 continue
-            if not current_path:
-                print_error("No path selected")
-            else:
-                name = cmd[7:].strip()
-                path = os.path.join(current_path, name)
-                if os.path.isfile(path):
-                    confirm = input(Fore.RED + f"⚠ Delete {name}? (y/n): ")
-                    if confirm.lower() == 'y':
-                        os.remove(path)
-                        print_success(f"File deleted: {Fore.YELLOW}{path}")
+            target = cmd[7:].strip()
+            path = target if os.path.isabs(target) else (os.path.join(current_path, target) if current_path else target)
+            if os.path.exists(path):
+                try:
+                    if os.path.isdir(path):
+                        os.rmdir(path)
                     else:
-                        print_info("Deletion cancelled")
+                        os.remove(path)
+                    print_success(f"Removed: {target}")
+                except Exception as e:
+                    print_error(f"Failed to delete: {e}")
+            else:
+                print_error("Target path not found.")
+                
+        # ---- OPEN FILE (DEFAULT APP) ----
+        elif cmd.lower().startswith("open "):
+            target = cmd[5:].strip()
+            path = target if os.path.isabs(target) else (os.path.join(current_path, target) if current_path else target)
+            if os.path.exists(path):
+                try:
+                    os.startfile(path)
+                    print_success(f"Opened {target} with default program.")
+                except Exception as e:
+                    print_error(f"Failed to open file: {e}")
+            else:
+                print_error("File not found.")
+
+        # ---- ENCRYPT ----
+        elif cmd.lower().startswith("encrypt "):
+            parts = cmd.split(maxsplit=2)
+            if len(parts) < 2:
+                print_error("Usage: encrypt <file.py> [key]")
+            else:
+                src = parts[1]
+                key = parts[2] if len(parts) > 2 else None
+                if not os.path.isabs(src) and current_path:
+                    src = os.path.join(current_path, src)
+                if not os.path.exists(src):
+                    print_error("Source file not found")
                 else:
-                    print_error("File not found")
-    
+                    try:
+                        out_path = encrypt_to_dpa(src, None, key)
+                        print_success(f"Encrypted legacy DPA script → {Fore.YELLOW}{out_path}")
+                    except Exception as e:
+                        print_error(f"Encryption failed: {e}")
+
+        # ---- DECRYPT ----
+        elif cmd.lower().startswith("decrypt "):
+            parts = cmd.split(maxsplit=2)
+            if len(parts) < 2:
+                print_error("Usage: decrypt <file.dpa> [key]")
+            else:
+                src = parts[1]
+                key = parts[2] if len(parts) > 2 else None
+                if not os.path.isabs(src) and current_path:
+                    src = os.path.join(current_path, src)
+                if not os.path.exists(src):
+                    print_error("Source file not found")
+                else:
+                    try:
+                        source = decrypt_dpa(src, key)
+                        print(Fore.CYAN + f"\n🔓 Decrypted text-source of {os.path.basename(src)}:\n")
+                        separator()
+                        print(Fore.YELLOW + source)
+                        separator()
+                    except Exception as e:
+                        print_error(f"Decryption failed: {e}")
+
         # ---- RUN ----
         elif cmd.lower().startswith("run "):
-            if not current_path:
-                print_error("No path selected")
-            else:
-                name = cmd[4:].strip()
-                path = os.path.join(current_path, name)
-                if not os.path.exists(path):
-                    print_error("File not found")
-                else:
-                    ext = os.path.splitext(path)[1].lower()
-                    if ext == ".dpa":
-                        run_dpa(path)
-                    elif ext == ".html":
-                        print_output(f"Opening {Fore.YELLOW}{path}{Fore.MAGENTA} in Google Chrome...")
-                        chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-                        if os.path.exists(chrome_path):
-                            subprocess.run([chrome_path, path])
-                            print_success("Launched successfully!")
-                        else:
-                            print_error("Chrome not found! Edit path if needed.")
-                    elif ext in [".py", ".js", ".java", ".cpp", ".c", ".cs"]:
-                        print_output(f"Opening {Fore.YELLOW}{path}{Fore.MAGENTA} in VS Code...")
-                        os.system(f'code "{path}"')
-                        print_success("Launched successfully!")
-                    else:
-                        print_error("Cannot run this file type")
-    
-        # ---- CODE ----
-        elif cmd.lower().startswith("code "):
-            if not current_path:
-                print_error("No path selected")
-            else:
-                name = cmd[5:].strip()
-                path = os.path.join(current_path, name)
-                if os.path.exists(path):
-                    print_output(f"Opening {Fore.YELLOW}{path}{Fore.MAGENTA} in VS Code...")
-                    os.system(f'code "{path}"')
-                    print_success("Launched successfully!")
-                else:
-                    print_error("File not found")
-    
-        # ---- ACODE ----
-        elif cmd.lower() == "acode":
-            if not current_path:
-                print_error("No path selected")
-            else:
-                print(Fore.CYAN + Style.BRIGHT + "\n🐍 Python Interactive Mode")
-                print(Fore.WHITE + "Type 'xcode' to exit\n")
-                separator()
-                while True:
-                    py_line = input(Fore.GREEN + "PY>> " + Fore.WHITE).strip()
-                    if py_line.lower() == "xcode":
-                        print_success("Exited acode mode")
-                        break
+            target = cmd[4:].strip()
+            path = target if os.path.isabs(target) else (os.path.join(current_path, target) if current_path else target)
+            if os.path.exists(path):
+                ext = os.path.splitext(path)[1].lower()
+                if ext == ".html":
                     try:
-                        result = eval(py_line)
-                        if result is not None:
-                            print(Fore.MAGENTA + "➤ " + str(result))
-                    except SyntaxError:
-                        try:
-                            exec(py_line)
-                        except Exception as e:
-                            print_error(f"Error: {e}")
-                    except Exception as e:
-                        print_error(f"Error: {e}")
-    
-        # ---- CALCULATOR ----
-        elif cmd.lower() == "calc":
-            print(Fore.CYAN + Style.BRIGHT + "\n🧮 DCMDS ADVANCED CALCULATOR")
-            print(Fore.WHITE + "Type 'exit' to quit calculator\n")
-            separator()
-            print(Fore.YELLOW + "Supported operations:")
-            print(Fore.WHITE + "• Basic: " + Fore.GREEN + "+ - * / % **")
-            print(Fore.WHITE + "• Functions: " + Fore.GREEN + "sqrt(), sin(), cos(), tan(), log(), abs()")
-            print(Fore.WHITE + "• Constants: " + Fore.GREEN + "pi, e")
-            print(Fore.WHITE + "• Examples: " + Fore.CYAN + "2+2, sqrt(16), sin(pi/2), 2**8")
-            separator()
-    
-            calc_history = []
-    
-            while True:
-                calc_input = input(Fore.GREEN + "CALC>> " + Fore.WHITE).strip()
-    
-                if calc_input.lower() == "exit":
-                    print_success("Exited calculator")
-                    break
-    
-                if calc_input.lower() == "history":
-                    if calc_history:
-                        print(Fore.CYAN + "\n📝 Calculation History:")
-                        for i, (expr, res) in enumerate(calc_history, 1):
-                            print(Fore.WHITE + f"{i}. " + Fore.YELLOW + f"{expr}" + Fore.WHITE + " = " + Fore.GREEN + f"{res}")
-                    else:
-                        print_info("No history yet")
-                    continue
-    
-                if calc_input.lower() == "clear":
-                    calc_history.clear()
-                    print_success("History cleared")
-                    continue
-    
-                if not calc_input:
-                    continue
-    
-                try:
-                    calc_input_eval = calc_input.replace("^", "**")
-    
-                    safe_dict = {
-                        "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
-                        "tan": math.tan, "log": math.log, "log10": math.log10,
-                        "abs": abs, "pi": math.pi, "e": math.e,
-                        "pow": pow, "round": round,
-                        "floor": math.floor, "ceil": math.ceil,
-                    }
-    
-                    result = eval(calc_input_eval, {"__builtins__": {}}, safe_dict)
-                    print(Fore.MAGENTA + Style.BRIGHT + "➤ " + Fore.GREEN + str(result))
-                    calc_history.append((calc_input, result))
-    
-                except Exception as e:
-                    print_error(f"Error: {e}")
-    
-        # ---- SERVER ----
-        elif cmd.lower().startswith("server port "):
-            port_str = cmd[12:].strip()
-            if not port_str.isdigit():
-                print_error("Invalid port number")
-            else:
-                port = int(port_str)
-                if not current_path:
-                    print_error("No path selected. Choose a folder first.")
+                        subprocess.Popen(["start", "chrome", path], shell=True)
+                        print_success("Opened HTML file in browser.")
+                    except:
+                        os.startfile(path)
+                elif ext == ".py":
+                    subprocess.run([sys.executable, path])
                 else:
-                    print_output(f"Starting HTTP server at {Fore.YELLOW}http://localhost:{port}/{Fore.MAGENTA}")
-                    print_output(f"Serving: {Fore.YELLOW}{current_path}")
-                    print(Fore.RED + "\n⚠ Press Ctrl+C to stop the server\n")
-                    try:
-                        import http.server
-                        import socketserver
-    
-                        os.chdir(current_path)
-                        handler = http.server.SimpleHTTPRequestHandler
-                        with socketserver.TCPServer(("", port), handler) as httpd:
-                            print_success(f"Server running on port {port}")
-                            httpd.serve_forever()
-                    except KeyboardInterrupt:
-                        print_output("\nServer stopped")
-                    except OSError as e:
-                        print_error(f"Failed to start server: {e}")
-    
-        # ---- CAMERA ----
-        elif cmd.lower() == "camera":
-            if camera_active:
-                print_error("Camera already active!")
+                    os.startfile(path)
             else:
-                cap = cv2.VideoCapture(0)
-                if not cap.isOpened():
-                    print_error("Cannot open camera")
-                else:
-                    camera_active = True
-                    print_success("Camera active. Press 'q' to close preview")
-                    while camera_active and not video_recording:
-                        ret, frame = cap.read()
-                        if not ret:
-                            print_error("Failed to grab frame")
-                            break
-                        cv2.imshow("DCMDS Camera", frame)
-                        key = cv2.waitKey(1)
-                        if key == ord('q'):
-                            camera_active = False
-                            break
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    print_success("Camera closed")
-    
-        elif cmd.lower() == "take":
-            if camera_active and cap is not None:
-                ret, frame = cap.read()
-                if ret:
-                    filename = f"photo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                    cv2.imwrite(filename, frame)
-                    print_success(f"Photo saved: {Fore.YELLOW}{filename}")
-                else:
-                    print_error("Failed to capture photo")
-            else:
-                print_error("Camera not active. Use 'camera' command first")
-    
-        elif cmd.lower() == "vid":
-            if camera_active and cap is not None:
-                if video_recording:
-                    print_error("Video already recording!")
-                else:
-                    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                    filename = f"video_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.avi"
-                    frame_width = int(cap.get(3))
-                    frame_height = int(cap.get(4))
-                    video_writer = cv2.VideoWriter(filename, fourcc, 20.0, (frame_width, frame_height))
-                    video_recording = True
-                    print_success(f"Recording video... Use 'endvid' to stop")
-                    print_info(f"Output: {Fore.YELLOW}{filename}")
-            else:
-                print_error("Camera not active. Use 'camera' command first")
-    
-        elif cmd.lower() == "endvid":
-            if video_recording:
-                video_recording = False
-                if video_writer is not None:
-                    video_writer.release()
-                cv2.destroyAllWindows()
-                print_success("Video recording stopped and saved")
-            else:
-                print_error("No video is being recorded")
-    
-        # ---- SHUTDOWN ----
-        elif cmd.lower() == "shutdown":
-            if safe_mode_blocked("shutdown"):
-                print_error("Safe mode is ON. Use 'safe off' to enable this command.")
-                separator()
-                continue
-            print(Fore.RED + Style.BRIGHT + "⚠️  WARNING: This will shutdown your computer!")
-            confirm = input(Fore.YELLOW + "Are you sure? (yes/no): ").strip().lower()
-            if confirm in ["yes", "y"]:
-                print_output("Shutting down computer in 10 seconds...")
-                print(Fore.RED + "Press Ctrl+C to cancel")
-                try:
-                    time.sleep(2)
-                    os.system("shutdown /s /t 10")
-                    print_success("Shutdown initiated!")
-                except KeyboardInterrupt:
-                    print_info("Shutdown cancelled")
-            else:
-                print_info("Shutdown cancelled")
-    
-        elif cmd.lower() == "sleep":
-            if safe_mode_blocked("sleep"):
-                print_error("Safe mode is ON. Use 'safe off' to enable this command.")
-                separator()
-                continue
-            print(Fore.YELLOW + Style.BRIGHT + "💤 Putting computer to sleep...")
-            confirm = input(Fore.YELLOW + "Continue? (yes/no): ").strip().lower()
-            if confirm in ["yes", "y"]:
-                print_success("Going to sleep mode...")
-                time.sleep(1)
-                os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-            else:
-                print_info("Sleep cancelled")
-    
-        elif cmd.lower() == "restart":
-            if safe_mode_blocked("restart"):
-                print_error("Safe mode is ON. Use 'safe off' to enable this command.")
-                separator()
-                continue
-            print(Fore.RED + Style.BRIGHT + "⚠️  WARNING: This will restart your computer!")
-            confirm = input(Fore.YELLOW + "Are you sure? (yes/no): ").strip().lower()
-            if confirm in ["yes", "y"]:
-                print_output("Restarting computer in 10 seconds...")
-                print(Fore.RED + "Press Ctrl+C to cancel")
-                try:
-                    time.sleep(2)
-                    os.system("shutdown /r /t 10")
-                    print_success("Restart initiated!")
-                except KeyboardInterrupt:
-                    print_info("Restart cancelled")
-            else:
-                print_info("Restart cancelled")
-    
-        elif cmd.lower() == "wifi":
-            show_wifi_networks()
-    
-        elif cmd.lower().startswith("wifipass "):
-            network_name = cmd[9:].strip()
-            if network_name:
-                show_wifi_password(network_name)
-            else:
-                print_error("Please specify network name: wifipass <network_name>")
-    
-        elif cmd.lower() == "ip":
-            show_ip_info()
-    
-        elif cmd.lower().startswith("copy "):
-            parts = cmd[5:].strip().split()
-            if len(parts) >= 2:
-                source = parts[0]
-                destination = ' '.join(parts[1:])
-                if not os.path.isabs(source) and current_path:
-                    source = os.path.join(current_path, source)
-                if not os.path.isabs(destination) and current_path:
-                    destination = os.path.join(current_path, destination)
-                copy_file(source, destination)
-            else:
-                print_error("Usage: copy <source> <destination>")
-    
-        elif cmd.lower().startswith("move "):
-            parts = cmd[5:].strip().split()
-            if len(parts) >= 2:
-                source = parts[0]
-                destination = ' '.join(parts[1:])
-                if not os.path.isabs(source) and current_path:
-                    source = os.path.join(current_path, source)
-                if not os.path.isabs(destination) and current_path:
-                    destination = os.path.join(current_path, destination)
-                move_file(source, destination)
-            else:
-                print_error("Usage: move <source> <destination>")
-    
-        elif cmd.lower().startswith("rename "):
-            parts = cmd[7:].strip().split()
-            if len(parts) >= 2:
-                old_name = parts[0]
-                new_name = ' '.join(parts[1:])
-                if not os.path.isabs(old_name) and current_path:
-                    old_name = os.path.join(current_path, old_name)
-                if not os.path.isabs(new_name) and current_path:
-                    new_name = os.path.join(current_path, new_name)
-                rename_file(old_name, new_name)
-            else:
-                print_error("Usage: rename <old_name> <new_name>")
-    
-        elif cmd.lower().startswith("search "):
-            pattern = cmd[7:].strip()
-            if pattern:
-                search_files(pattern)
-            else:
-                print_error("Usage: search <pattern> (e.g., search *.txt)")
-    
-        elif cmd.lower().startswith("info "):
-            filename = cmd[5:].strip()
-            if filename:
-                show_file_info(filename)
-            else:
-                print_error("Usage: info <filename>")
-    
-        elif cmd.lower() == "note":
-            quick_note()
-    
+                print_error("File not found.")
+
+        # ---- CLEANUP ----
         elif cmd.lower() == "cleanup":
             if safe_mode_blocked("cleanup"):
                 print_error("Safe mode is ON. Use 'safe off' to enable this command.")
             else:
                 system_cleanup()
-    
-        elif cmd.lower() == "tree":
-            if not current_path:
-                print_error("No path selected")
-            else:
-                print(Fore.CYAN + Style.BRIGHT + f"\n🌳 DIRECTORY TREE: {current_path}\n")
-                separator()
-                try:
-                    for root, dirs, files in os.walk(current_path):
-                        level = root.replace(current_path, '').count(os.sep)
-                        indent = '  ' * level
-                        folder_name = os.path.basename(root)
-                        if level == 0:
-                            print(Fore.CYAN + f"{current_path}")
-                        else:
-                            print(Fore.CYAN + f'{indent}📁 {folder_name}')
-    
-                        sub_indent = '  ' * (level + 1)
-                        for file in files[:5]:
-                            print(Fore.YELLOW + f'{sub_indent}📄 {file}')
-    
-                        if len(files) > 5:
-                            print(Fore.WHITE + f'{sub_indent}... and {len(files) - 5} more files')
-    
-                        if level >= 2:
-                            dirs[:] = []
-    
-                    separator()
-                except Exception as e:
-                    print_error(f"Error displaying tree: {e}")
 
-        # ---- AUTO-RUN .DPA (just type the filename) ----
-        elif cmd.lower().endswith(".dpa") and " " not in cmd.strip():
-            name = cmd.strip()
-            path = name if os.path.isabs(name) else (
-                os.path.join(current_path, name) if current_path else name)
-            if os.path.exists(path):
-                run_dpa(path)
-            elif current_path and os.path.exists(os.path.join(current_path, name)):
-                 run_dpa(os.path.join(current_path, name))
-            else:
-                print_error(f"File not found: {name}")
+        # ---- INFO ----
+        elif cmd.lower().startswith("info "):
+            show_file_info(cmd[5:].strip())
 
-        # ---- PLUGIN COMMANDS ----
-        elif cmd.split()[0].lower() in COMMANDS:
-            try:
-                args = cmd.split()[1:]
-                COMMANDS[cmd.split()[0].lower()](args, cmd)
-            except Exception as e:
-                print_error(f"Plugin error: {e}")
+        # ---- NOTE ----
+        elif cmd.lower() == "note":
+            quick_note()
+
+        # ---- WIFI / IP ----
+        elif cmd.lower() == "wifi":
+            show_wifi_networks()
+        elif cmd.lower().startswith("wifipass "):
+            show_wifi_password(cmd[9:].strip())
+        elif cmd.lower() == "ip":
+            show_ip_info()
+
+        # ---- COPY / MOVE / RENAME ----
+        elif cmd.lower().startswith("copy "):
+            parts = cmd[5:].strip().split(maxsplit=1)
+            if len(parts) == 2:
+                copy_file(parts[0], parts[1])
+            else:
+                print_error("Usage: copy <src> <dst>")
+        elif cmd.lower().startswith("move "):
+            parts = cmd[5:].strip().split(maxsplit=1)
+            if len(parts) == 2:
+                move_file(parts[0], parts[1])
+            else:
+                print_error("Usage: move <src> <dst>")
+        elif cmd.lower().startswith("rename "):
+            parts = cmd[7:].strip().split(maxsplit=1)
+            if len(parts) == 2:
+                rename_file(parts[0], parts[1])
+            else:
+                print_error("Usage: rename <old> <new>")
+
+        # ---- SEARCH ----
+        elif cmd.lower().startswith("search "):
+            search_files(cmd[7:].strip())
+
+        # ---- SYSTEM POWER COMMANDS ----
+        elif cmd.lower() == "shutdown":
+            if safe_mode_blocked("shutdown"):
+                print_error("Safe mode is ON. Toggle off to shutdown system.")
+            else:
+                print_info("Shutting down machine...")
+                os.system("shutdown /s /t 1")
+        elif cmd.lower() == "restartsys":
+            if safe_mode_blocked("restart"):
+                print_error("Safe mode is ON. Toggle off to restart system.")
+            else:
+                print_info("Restarting machine...")
+                os.system("shutdown /r /t 1")
+        elif cmd.lower() == "sleep":
+            if safe_mode_blocked("sleep"):
+                print_error("Safe mode is ON. Toggle off to trigger sleep.")
+            else:
+                print_info("System putting to sleep...")
+                os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
 
         else:
-            # ---- .FOLDER and .FILE shortcuts ----
-            if current_path and cmd.endswith('.folder'):
-                folder_name = cmd[:-7]
-                if folder_name:
-                    new_folder = os.path.join(current_path, folder_name)
-                    try:
-                        os.makedirs(new_folder)
-                        print_success(f"Folder created: {Fore.YELLOW}{folder_name}")
-                    except FileExistsError:
-                        print_error(f"Folder '{folder_name}' already exists")
-                    except Exception as e:
-                        print_error(f"Failed to create folder: {e}")
-                else:
-                    print_error("Invalid folder name")
-    
-            elif current_path and cmd.endswith('.file'):
-                file_name = cmd[:-5]
-                if file_name:
-                    new_file = os.path.join(current_path, file_name)
-                    try:
-                        open(new_file, "w").close()
-                        print_success(f"File created: {Fore.YELLOW}{file_name}")
-                    except Exception as e:
-                        print_error(f"Failed to create file: {e}")
-                else:
-                    print_error("Invalid file name")
-    
-            elif current_path and not cmd.startswith(" "):
-                potential_file = os.path.join(current_path, cmd)
-    
-                if os.path.exists(potential_file):
-                    if os.path.isfile(potential_file):
-                        ext = os.path.splitext(potential_file)[1].lower()
+            print_error(f"Unknown command: '{cmd.split()[0]}'. Type 'help' for support.")
+            separator()
 
-                        # ← .dpa يُفتح مباشرة في DCMDS
-                        if ext == ".dpa":
-                            open_dpa_file(potential_file)
-
-                        elif ext == ".html":
-                            print_output(f"🌐 Detected HTML file. Opening in Chrome...")
-                            chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-                            if os.path.exists(chrome_path):
-                                subprocess.run([chrome_path, potential_file])
-                                print_success("Launched successfully!")
-                            else:
-                                print_error("Chrome not found!")
-    
-                        elif ext in [".py", ".js", ".java", ".cpp", ".c", ".cs", ".css", ".jsx"]:
-                            print_output(f"💻 Detected code file. Opening in VS Code...")
-                            os.system(f'code "{potential_file}"')
-                            print_success("Launched successfully!")
-    
-                        else:
-                            print_output(f"📂 Opening with default program...")
-                            os.startfile(potential_file)
-                            print_success("Launched successfully!")
-    
-                    elif os.path.isdir(potential_file):
-                        current_path = potential_file
-                        print_success(f"Entered folder: {Fore.YELLOW}{current_path}")
-    
-                else:
-                    print_error(f"❌ File or folder '{cmd}' not found!")
-                    print_info(f"💡 Tip: Type 'ls' to see available files and folders")
-            else:
-                print_error(f"Unknown command: '{cmd}'. Type 'help' for available commands")
-    
-        separator()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n" + Fore.RED + "System forcefully interrupted. Goodbye!")
